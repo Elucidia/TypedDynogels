@@ -33,6 +33,22 @@ export class Utils {
         return _.omitBy(data, (value: any) => _.isNull(value) || _.isUndefined(value) || (_.isArray(value) && _.isEmpty(value)) || (_.isString(value) && _.isEmpty(value)));
     }
 
+    // from : https://stackoverflow.com/questions/286141/remove-blank-attributes-from-an-object-in-javascript/38340730#38340730
+    public static RemoveEmptyAttributesFromObject<T extends Object>(obj: T): T {
+        const parsedObject: T = JSON.parse(JSON.stringify(obj)); // Clone source oect.
+
+        Object.keys(parsedObject).forEach((key) => {
+            if (parsedObject[key] && typeof parsedObject[key] === 'object') {
+                parsedObject[key] = Utils.RemoveEmptyAttributesFromObject(parsedObject[key]);
+            } else if (parsedObject[key] === undefined || parsedObject[key] === null) {
+                delete parsedObject[key];
+            } else {
+                parsedObject[key] = parsedObject[key];
+            }
+        });
+        return parsedObject;
+    }
+
     /**
      * Merges the responses from a parallel scan call
      * @param responses

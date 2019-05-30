@@ -5,6 +5,9 @@ import {EventEmitter} from 'events';
 export class Item extends EventEmitter {
     private table: Table;
     private attributes: Object;
+
+    public $add; //temp
+    public $del; //temp
     // TODO: identity?
 
     constructor(attributes: Object, table: Table) {

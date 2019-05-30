@@ -1,5 +1,5 @@
 import * as _ from 'lodash';
-import {validate, ValidationError, object, date, ValidationResult, boolean, SchemaMap, string} from '@hapi/joi';
+import {validate, ValidationError, object, date, ValidationResult, boolean, SchemaMap, string, ValidationOptions} from '@hapi/joi';
 import {Internals} from '../internals/internals';
 import {Log} from '../util/log';
 import {DynamoDBIndexTypes} from '../database/types/dynamodbIndexTypes';
@@ -78,7 +78,7 @@ export class Schema {
             });
     }
 
-    public validate(value: any, options?: Object): ValidationResult<any> {
+    public validate(value: any, options?: ValidationOptions): ValidationResult<any> {
         options = options || {};
         if (this.validationOptions) {
             _.extend(options, this.validationOptions);

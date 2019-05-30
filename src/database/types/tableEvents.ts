@@ -1,3 +1,5 @@
 export enum TableEvents {
-    CREATE      = 'create'
+    CREATE      = 'put',
+    UPDATE      = 'updated',
+    DELETE      = 'deleted',
 }

@@ -1,4 +1,4 @@
-export interface ICreateItemOptions {
+export interface IPutItemOptions {
     expected?: any;
     overwrite?: boolean;
 }
