@@ -1,5 +1,7 @@
+import {ExpressionAttributeNameMap, ExpressionAttributeValueMap} from 'aws-sdk/clients/dynamodb';
+
 export interface IFilterExpression {
-    attributeNames: Object;
+    attributeNames: ExpressionAttributeNameMap;
     statement: string;
-    attributeValues: Object;
+    attributeValues: ExpressionAttributeValueMap;
 }

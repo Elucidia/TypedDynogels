@@ -21,6 +21,8 @@ import {UpdateReturnValuesModes} from './types/updateReturnValuesModes';
 import {IUpdateItemOptions} from './types/iUpdateItemOptions';
 import {DynamoDBRequestMethods} from './types/dynamodbRequestMethods';
 import {IDeleteItemOptions} from './types/iDeleteItemOptions';
+import {Query} from '../scanQuery/query';
+import {Scan} from '../scanQuery/scan';
 
 export class Table {
     private configuration: ITableConfiguration;
@@ -64,6 +66,10 @@ export class Table {
         } else {
             return this.configuration.name;
         }
+    }
+
+    public getSchema(): Schema {
+        return this.schema;
     }
 
     public async sendRequest(method: DynamoDBRequestMethods, parameters: any): Promise<any | AWSError> {
@@ -293,6 +299,14 @@ export class Table {
             });
 
         return Promise.resolve(resultToReturn);
+    }
+
+    public getQueryRequestForTable(hashKey: Object): Query {
+        return new Query(this, hashKey);
+    }
+
+    public getScanRequestForTable(): Scan {
+        return new Scan(this);
     }
 
     // formally CallBeforeHooks()
