@@ -1,5 +1,5 @@
 import * as _ from 'lodash';
-import {DocumentClient, GetItemInput, GetItemOutput, PutItemInput, DeleteItemInput, ExpressionAttributeNameMap, ExpressionAttributeValueMap, QueryInput, UpdateItemInput, UpdateItemOutput, DeleteItemOutput} from 'aws-sdk/clients/dynamodb';
+import {DocumentClient, GetItemInput, GetItemOutput, PutItemInput, DeleteItemInput, ExpressionAttributeNameMap, ExpressionAttributeValueMap, QueryInput, UpdateItemInput, UpdateItemOutput, DeleteItemOutput, PutItemOutput} from 'aws-sdk/clients/dynamodb';
 import {waterfall, map} from 'async';
 import {Item} from './item';
 import {ITableConfiguration} from './types/iTableConfiguration';
@@ -23,6 +23,7 @@ import {DynamoDBRequestMethods} from './types/dynamodbRequestMethods';
 import {IDeleteItemOptions} from './types/iDeleteItemOptions';
 import {Query} from '../scanQuery/query';
 import {Scan} from '../scanQuery/scan';
+import {ParallelScan} from '../scanQuery/parallelScan';
 
 export class Table {
     private configuration: ITableConfiguration;
@@ -123,57 +124,25 @@ export class Table {
         return Promise.resolve(item);
     }
     // TODO: bien tester, pas sur du resultat
-    public async putItem(item: Item, options?: IPutItemOptions): Promise<any> {
+    // TODO: retourner PutItemOutput
+    /**
+     *
+     * @param item the Item from PutItemInput
+     * @param options
+     */
+    public async putItem(item: Object|Object[], options?: IPutItemOptions): Promise<any> {
         options = options || {};
         let itemPut;
         if (Array.isArray(item)) {
-            await map(item, async (data, callback) => {
-                await Table.NotifyBeforeEventListeners(this, TableEvents.CREATE, Table.PrepareItem) // TODO: vider le .then et faire comme dans updateItem()
-                    .then(async (result: Object) => {
-                        const validatedSchema: ValidationResult<any> = (await this.schema.validate(result));
-                        if (validatedSchema.error) {
-                            validatedSchema.error.message = `${validatedSchema.error.message} on ${this.getTableName()}`;
-                            return Promise.reject(validatedSchema.error);
-                        }
-
-                        const nullOmittedAttributes = Utils.OmitNulls(result);
-                        let itemParameters = {
-                            TableName: this.getTableName(),
-                            Item: Serializer.SerializeItem(this.schema, nullOmittedAttributes)
-                        };
-
-                        if (options.expected) {
-                            Table.AddConditionExpressionToRequest(itemParameters, options.expected);
-                            delete options.expected;
-                        }
-
-                        if (!options.overwrite) {
-                            const expected = _.chain([this.schema.getHashKeyName(), this.schema.getRangeKeyName()]).compact().reduce((accumulator: any, key: string) => {
-                                _.set(accumulator, `${key}.<>`, _.get(itemParameters.Item, key));
-                                return accumulator;
-                            }, {}).value();
-
-                            Table.AddConditionExpressionToRequest(itemParameters, expected);
-                        }
-
-                        delete options.overwrite;
-                        itemParameters = {...itemParameters, ...options};
-
-                        await this.sendRequest(DynamoDBRequestMethods.PUT, itemParameters)
-                            .then(() => {
-                                const item = this.initializeItem(nullOmittedAttributes);
-                                this.afterEvent.emit(TableEvents.CREATE, item);
-                                itemPut = item;
-                            })
-                            .catch((error) => {
-                                Log.Error(Table.name, 'createItem', 'An error occurred while putting item in DynamoDB');
-                            })
-                    })
-                    .catch((error: any) => {
-                        Log.Error(Table.name, 'createItem', 'An error occurred while notifying listeners for "create" event', [{name: 'Error', value: error}]);
-                        return Promise.reject(error);
-                    });
+            //await map(item, async (data, callback) => {);
+            const putItemPromises: any[] = [];
+            item.forEach((singleItem: Object) => {
+                putItemPromises.push(Table.CreateAndPutItem(this, singleItem, options || {}));
             });
+
+            await Promise.all(putItemPromises);
+        } else {
+            await Table.CreateAndPutItem(this, item, options || {});
         }
         return Promise.resolve(item);
     }
@@ -309,6 +278,10 @@ export class Table {
         return new Scan(this);
     }
 
+    public getParallelScanRequestForTable(totalSegments: number): ParallelScan {
+        return new ParallelScan(this, totalSegments);
+    }
+
     // formally CallBeforeHooks()
     private static async NotifyBeforeEventListeners(table: Table, eventName: TableEvents, startFunc: Function): Promise<any> {
         const listeners: Function[] = table.beforeEvent.listeners(eventName);
@@ -320,6 +293,59 @@ export class Table {
                 resolve(result);
             });
         });
+    }
+
+    private static async CreateAndPutItem(table: Table, item: Object, options: IPutItemOptions): Promise<PutItemOutput | any> {
+        let notifierResult: Object;
+        await Table.NotifyBeforeEventListeners(table, TableEvents.CREATE, Table.PrepareItem)
+            .then((result: Object) => {
+                notifierResult = result;
+            })
+            .catch((error: any) => {
+                Log.Error(Table.name, 'CreateItemAndPut', 'An error occurred while notifying listeners for "create" event', [{name: 'Error', value: error}]);
+                return Promise.reject(error);
+            });
+
+        const validatedSchema: ValidationResult<any> = (await table.schema.validate(notifierResult));
+        if (validatedSchema.error) {
+            validatedSchema.error.message = `${validatedSchema.error.message} on ${table.getTableName()}`;
+            return Promise.reject(validatedSchema.error);
+        }
+
+        const nullOmittedAttributes = Utils.OmitNulls(notifierResult);
+        let putItemRequest: PutItemInput = {
+            TableName: table.getTableName(),
+            Item: Serializer.SerializeItem(table.schema, nullOmittedAttributes)
+        };
+
+        if (options.expected) {
+            Table.AddConditionExpressionToRequest(putItemRequest, options.expected);
+            delete options.expected;
+        }
+
+        if (!options.overwrite) {
+            const expected = _.chain([table.schema.getHashKeyName(), table.schema.getRangeKeyName()]).compact().reduce((accumulator: any, key: string) => {
+                _.set(accumulator, `${key}.<>`, _.get(putItemRequest.Item, key));
+                return accumulator;
+            }, {}).value();
+            Table.AddConditionExpressionToRequest(putItemRequest, expected);
+        }
+
+        delete options.overwrite;
+        putItemRequest = {...putItemRequest, ...options.putItemRequest};
+
+        let resultToReturn: PutItemOutput;
+        await table.sendRequest(DynamoDBRequestMethods.PUT, putItemRequest)
+            .then((result: PutItemOutput) => {
+                resultToReturn = result;
+                table.afterEvent.emit(TableEvents.CREATE, result);
+            })
+            .catch((error: any) => {
+                Log.Error(Table.name, 'createItem', 'An error occurred while putting item in DynamoDB');
+                return Promise.reject(error);
+            });
+
+        return Promise.resolve(resultToReturn);
     }
 
     private static PrepareItem(table: Table, item: Item): Object {
@@ -437,5 +463,9 @@ export class Table {
         }
 
         return item;
+    }
+
+    private static DeserializeItems(table: Table) {
+
     }
 }

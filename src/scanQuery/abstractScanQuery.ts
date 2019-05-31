@@ -7,6 +7,8 @@ import {IScanQueryFilter} from './types/iScanQueryFilter';
 import {IKeyCondition} from './types/iKeyCondition';
 import {Log} from '../util/log';
 import {Serializer} from '../serializer/serializer';
+import {ReturnConsumedCapacityValues} from './types/returnConsumedCapacityValues';
+import {SelectValues} from './types/selectValues';
 
 /**
  * Abstract class containing functions used by both of Query and Scan classes
@@ -103,8 +105,18 @@ export abstract class AbstractScanQuery<T, U extends QueryInput | ScanInput> {
         return this as unknown as T;
     }
 
-    public select(value): T {
-        this.request.
+    public select(value: SelectValues): T {
+        this.request.Select = value;
+        return this as unknown as T;
+    }
+
+    public setReturnConsumedCapacity(value: ReturnConsumedCapacityValues): T {
+        if (_.isUndefined(value)) {
+            value = ReturnConsumedCapacityValues.TOTAL;
+        }
+
+        this.request.ReturnConsumedCapacity = value;
+        return this as unknown as T;
     }
 
     public getRequest(): U {
@@ -113,6 +125,11 @@ export abstract class AbstractScanQuery<T, U extends QueryInput | ScanInput> {
 
     public setRequest(request: U): T {
         this.request = request;
+        return this as unknown as T;
+    }
+
+    public setLoadAll(state: boolean = true): T {
+        this.options.loadAll = state;
         return this as unknown as T;
     }
 

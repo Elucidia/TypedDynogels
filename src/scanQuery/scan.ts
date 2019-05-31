@@ -5,7 +5,7 @@ import {IKeyCondition} from './types/iKeyCondition';
 import {ScanQueryUtils} from './scanQueryUtils';
 import {IScanQueryFilter} from './types/iScanQueryFilter';
 
-export class Scan extends AbstractScanQuery {
+export class Scan extends AbstractScanQuery<Scan, ScanInput> {
     constructor(table: Table) {
         super(table);
     }

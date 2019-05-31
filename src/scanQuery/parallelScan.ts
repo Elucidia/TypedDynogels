@@ -3,6 +3,7 @@ import {Scan} from './scan';
 import {Table} from '../database/table';
 import {ScanOutput} from 'aws-sdk/clients/dynamodb';
 import {Readable} from 'stream';
+import {AbstractScanQuery} from './abstractScanQuery';
 
 export class ParallelScan extends Scan {
     private totalSegments: number;
@@ -19,7 +20,7 @@ export class ParallelScan extends Scan {
         for (let i = 0; i < this.totalSegments; ++i) {
             let scan: Scan = new Scan(this.table);
             scan.setRequest(_.cloneDeep(super.request));
-            scan = scan.setSegments(i, this.totalSegments).
+            scan = scan.setSegments(i, this.totalSegments).setLoadAll();
         }
     }
 }
