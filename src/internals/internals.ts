@@ -8,8 +8,8 @@ import {DynamoDBItemTypes} from '../database/types/dynamodbItemTypes';
 
 export class Internals {
     public static readonly SECONDARY_INDEX_SCHEMA: ObjectSchema = object().keys({
-        hashKeyValue: string().when('type', {is: 'local', then: ref('$hashKey'), otherwise: required()}),
-        rangeKeyValue: string().when('type', {is: 'local', then: required(), otherwise: optional()}),
+        hashKeyName: string().when('type', {is: 'local', then: ref('$hashKeyName'), otherwise: required()}),
+        rangeKeyName: string().when('type', {is: 'local', then: required(), otherwise: optional()}),
         type: string().valid('local', 'global').required(),
         name: string().required(),
         projection: object(),
@@ -18,8 +18,8 @@ export class Internals {
     });
 
     public static readonly CONFIGURATION_SCHEMA: ObjectSchema = object().keys({
-        hashKeyValue: string().required(),
-        rangeKeyValue: string(),
+        hashKeyName: string().required(),
+        rangeKeyName: string(),
         tableName: alternatives().try(string(), func()),
         indexes: array().items(Internals.SECONDARY_INDEX_SCHEMA),
         schema: object(),

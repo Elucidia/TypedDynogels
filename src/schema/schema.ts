@@ -14,8 +14,12 @@ export class Schema {
     private timestamps: boolean;
     private createdAt: string | boolean;
     private updatedAt: string | boolean;
-    private secondaryIndexes: _.Dictionary<IIndex> = {};
-    private globalIndexes: _.Dictionary<IIndex> = {};
+    // OLD
+    //private secondaryIndexes: _.Dictionary<IIndex> = {};
+    //private globalIndexes: _.Dictionary<IIndex> = {};
+    // NEW
+    private localIndexes: Map<string, IIndex> = new Map<string, IIndex>();
+    private globalIndexes: Map<string, IIndex> = new Map<string, IIndex>();
     private validationOptions: IValidationOptions;
 
     private modelSchema;
@@ -35,8 +39,24 @@ export class Schema {
                 this.updatedAt = data.updatedAt;
 
                 if (data.indexes) {
-                    this.globalIndexes = _.chain(data.indexes).filter((o) => o.type === DynamoDBIndexTypes.GLOBAL).keyBy('name').value();
-                    this.secondaryIndexes = _.chain(data.indexes).filter((o) => o.type === DynamoDBIndexTypes.LOCAL).keyBy('name').value();
+                    // OLD: this.globalIndexes = _.chain(data.indexes).filter((o) => o.type === DynamoDBIndexTypes.GLOBAL).keyBy('name').value();
+                    // OLD: this.secondaryIndexes = _.chain(data.indexes).filter((o) => o.type === DynamoDBIndexTypes.LOCAL).keyBy('name').value();
+                    data.indexes.forEach((index: IIndex) => {
+                        switch (index.type) {
+                            case DynamoDBIndexTypes.GLOBAL: {
+                                this.globalIndexes.set(index.name, index);
+                                break;
+                            }
+                            case DynamoDBIndexTypes.LOCAL: {
+                                this.localIndexes.set(index.name, index);
+                                break;
+                            }
+                            default: {
+                                Log.Error(Schema.name, 'initialize', 'Invalid index type', [{name: 'Given index type', value: index.type}]);
+                                break;
+                            }
+                        }
+                    });
                 }
 
                 if (data.schema) {
@@ -115,12 +135,12 @@ export class Schema {
         return this.updatedAt;
     }
 
-    public getGlobalIndexes(): _.Dictionary<IIndex> {
+    public getGlobalIndexes(): Map<string, IIndex> {
         return this.globalIndexes;
     }
 
-    public getSecondaryIndexes(): _.Dictionary<IIndex> {
-        return this.secondaryIndexes;
+    public getLocalIndexes(): Map<string, IIndex> {
+        return this.localIndexes;
     }
 
     public getDatatypes(): any {

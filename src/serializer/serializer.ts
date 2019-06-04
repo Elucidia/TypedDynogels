@@ -1,6 +1,6 @@
 import * as _ from 'lodash';
 import * as utils from 'util'
-import {DocumentClient} from 'aws-sdk/clients/dynamodb';
+import {DocumentClient, AttributeMap} from 'aws-sdk/clients/dynamodb';
 import {Internals} from '../internals/internals';
 import {DynamoDBItemTypes} from '../database/types/dynamodbItemTypes';
 import {Utils} from '../util/utils';
@@ -10,6 +10,7 @@ import {Log} from '../util/log';
 import {ISerializeItemOptions} from './types/iSerializeItemOptions';
 import {UpdateActions} from './types/updateActions';
 import {DynamoDB} from 'aws-sdk';
+import {IIndex} from '../schema/types/iIndex';
 
 export class Serializer {
     public static CreateSet(value: any, options?: DocumentClient.CreateSetOptions): DocumentClient.DynamoDbSet {
@@ -20,7 +21,8 @@ export class Serializer {
         }
     }
 
-    public static DeserializeAttribute(value: DocumentClient.DynamoDbSet | any) {
+    // TODO: is this function has a meaning to stay?
+    public static DeserializeAttribute(value: DocumentClient.DynamoDbSet | DocumentClient.DynamoDbSet[]) {
         /*if (_.isObject(value) && _.isFunction(value.detectType) && _.isArray(value.values)) {
             return value.values;
         } else {
@@ -86,13 +88,13 @@ export class Serializer {
         }, {});
     }
 
-    public static DeserializeItem(item) {
+    public static DeserializeItem(item: AttributeMap) {
         if (_.isNull(item)) {
             return null;
         }
 
-        let map;
-        if (_.isArray(item)) {
+        let map: Function;
+        if (_.isArray(item)) { // TODO: split in two functions (one for array, one for not array)
             map = _.map;
         } else {
             map = _.mapValues;
@@ -125,43 +127,56 @@ export class Serializer {
     }
 
     /**
-     * Receives AWS format key
-     *
-     * AWS format: {keyName: {S/N/whatever dynamodb type: keyValue}}
-     *
+     * Takes a hashKey and an optional rangeKey. These can be either a simple value or an object. Outputs this format: {hashKeyName: hashKeyValue}
      * @param schema
-     * @param dynamoDBKey The hash key in AWS format
      */
-    public static BuildKey(schema: Schema, dynamoDBKey: Object) {
+    public static BuildKey(schema: Schema, hashKeyValue: any, rangeKeyValue?: any) {
         const keysObject: Object = {};
         const hashKeyName: string = schema.getHashKeyName();
         const rangeKeyName: string = schema.getRangeKeyName();
 
-        if (_.isPlainObject(dynamoDBKey)) {
-            keysObject[hashKeyName] = dynamoDBKey[hashKeyName];
+        if (_.isPlainObject(hashKeyValue)) {
+            keysObject[hashKeyName] = hashKeyValue[hashKeyName];
 
-            if (rangeKeyName && !_.isNull(dynamoDBKey[rangeKeyName]) && !_.isUndefined(dynamoDBKey[rangeKeyName])) {
-                keysObject[rangeKeyName] = dynamoDBKey[rangeKeyName];
+            if (rangeKeyName && !_.isNull(hashKeyValue[rangeKeyName]) && !_.isUndefined(hashKeyValue[rangeKeyName])) {
+                keysObject[rangeKeyName] = hashKeyValue[rangeKeyName];
             }
 
-            _.each(schema.getGlobalIndexes(), (index) => {
-                if (_.has(dynamoDBKey, index.hashKeyName)) {
+            schema.getGlobalIndexes().forEach((index: IIndex) => {
+                if (Object.keys(hashKeyValue).includes(index.hashKeyName)) {
+                    keysObject[index.hashKeyName] = hashKeyValue[index.hashKeyName];
+                }
+
+                if (Object.keys(hashKeyValue).includes(index.rangeKeyName)) {
+                    keysObject[index.rangeKeyName] = hashKeyValue[index.rangeKeyName];
+                }
+            });
+
+            schema.getLocalIndexes().forEach((index: IIndex) => {
+                if (Object.keys(hashKeyValue).includes(index.rangeKeyName)) {
+                    keysObject[index.rangeKeyName] = hashKeyValue[index.rangeKeyName];
+                }
+            });
+            /*_.each(schema.getGlobalIndexes(), (index) => {
+                if (_.has(hashKeyValue, index.hashKeyName)) {
                     keysObject[index.hashKeyName] = dynamoDBKey[index.hashKeyName];
                 }
 
-                if (_.has(dynamoDBKey, index.rangeKeyName)) {
+                if (_.has(hashKeyValue, index.rangeKeyName)) {
                     keysObject[index.rangeKeyName] = dynamoDBKey[index.rangeKeyName];
                 }
             });
 
-            _.each(schema.getSecondaryIndexes(), (index) => {
+            _.each(schema.getLocalIndexes(), (index) => {
                 if (_.has(dynamoDBKey, index.rangeKeyName)) {
                     keysObject[index.rangeKeyName] = dynamoDBKey[index.rangeKeyName];
                 }
-            });
+            });*/
         } else {
-            Log.Error(Serializer.name, 'BuildKey', 'DynamoDBKey must be an object', [{name: 'Typeof dynamoDBKey', value: typeof dynamoDBKey}]);
-            return null;
+            keysObject[schema.getHashKeyName()] = hashKeyValue;
+            if (schema.getRangeKeyName() && rangeKeyValue) {
+                keysObject[schema.getRangeKeyName()] = rangeKeyValue;
+            }
         }
 
         return Serializer.SerializeItem(schema, keysObject);

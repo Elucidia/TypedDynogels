@@ -1,6 +1,6 @@
 import * as _ from 'lodash';
-import {DocumentClient, GetItemInput, GetItemOutput, PutItemInput, DeleteItemInput, ExpressionAttributeNameMap, ExpressionAttributeValueMap, QueryInput, UpdateItemInput, UpdateItemOutput, DeleteItemOutput, PutItemOutput} from 'aws-sdk/clients/dynamodb';
-import {waterfall, map} from 'async';
+import {DocumentClient, GetItemInput, GetItemOutput, PutItemInput, DeleteItemInput, ExpressionAttributeNameMap, ExpressionAttributeValueMap, QueryInput, UpdateItemInput, UpdateItemOutput, DeleteItemOutput, PutItemOutput, QueryOutput, ScanOutput, AttributeMap, ScanInput, BatchGetItemInput, BatchGetItemOutput, AttributeDefinition, KeySchemaElement, LocalSecondaryIndex, GlobalSecondaryIndex, CreateTableInput, CreateTableOutput, DescribeTableOutput, DescribeTableInput, DeleteTableOutput, DeleteTableInput, GlobalSecondaryIndexDescription, UpdateTableInput, ProvisionedThroughput, UpdateTableOutput} from 'aws-sdk/clients/dynamodb';
+import {waterfall, map, mapLimit} from 'async';
 import {Item} from './item';
 import {ITableConfiguration} from './types/iTableConfiguration';
 import {Schema} from '../schema/schema';
@@ -24,6 +24,11 @@ import {IDeleteItemOptions} from './types/iDeleteItemOptions';
 import {Query} from '../scanQuery/query';
 import {Scan} from '../scanQuery/scan';
 import {ParallelScan} from '../scanQuery/parallelScan';
+import {KeyTypes} from './types/keyTypes';
+import {ISecondaryIndex} from '../schema/types/iSecondaryIndex';
+import {ProjectionTypes} from '../schema/types/projectionTypes';
+import {IMakeTableOptions} from './types/iMakeTableOptions';
+import {IIndex} from '../schema/types/iIndex';
 
 export class Table {
     private configuration: ITableConfiguration;
@@ -48,7 +53,7 @@ export class Table {
     }
 
     // TODO rename
-    public initializeItem(attributes): Item {
+    public createItem(attributes: Object): Item {
         if (this.itemFactory) {
             return new this.itemFactory(attributes);
         } else {
@@ -109,11 +114,11 @@ export class Table {
         parameters = {...parameters, ...options};
 
         let item;
-        await this.sendRequest(DynamoDBRequestMethods.GET, parameters)
+        await this.sendRequest(DynamoDBRequestMethods.GET_ITEM, parameters)
             .then((success: GetItemOutput) => {
                 let item = null;
                 if (success.Item) {
-                    item = this.initializeItem(Serializer.DeserializeItem(success.Item));
+                    item = this.createItem(Serializer.DeserializeItem(success.Item));
                 }
             })
             .catch((error: AWSError) => {
@@ -207,11 +212,11 @@ export class Table {
         updateParameters = Utils.RemoveEmptyAttributesFromObject({...updateParameters, ...unprocessedOptions});
 
         let resultToReturn: UpdateItemOutput;
-        await this.sendRequest(DynamoDBRequestMethods.UPDATE, updateParameters)
+        await this.sendRequest(DynamoDBRequestMethods.UPDATE_ITEM, updateParameters)
             .then((success: UpdateItemOutput) => {
                 let result = null;
                 if (success.Attributes) {
-                    result = this.initializeItem(Serializer.DeserializeItem(success.Attributes));
+                    result = this.createItem(Serializer.DeserializeItem(success.Attributes));
                 }
 
                 this.afterEvent.emit(TableEvents.UPDATE, result);
@@ -252,11 +257,11 @@ export class Table {
         }
 
         let resultToReturn;
-        await this.sendRequest(DynamoDBRequestMethods.DELETE, deleteParameters)
+        await this.sendRequest(DynamoDBRequestMethods.DELETE_ITEM, deleteParameters)
             .then((success: DeleteItemOutput) => {
                 let item = null;
                 if (success.Attributes) {
-                    item = this.initializeItem(Serializer.DeserializeItem(success.Attributes));
+                    item = this.createItem(Serializer.DeserializeItem(success.Attributes));
                 }
 
                 this.afterEvent.emit(TableEvents.DELETE, item);
@@ -280,6 +285,155 @@ export class Table {
 
     public getParallelScanRequestForTable(totalSegments: number): ParallelScan {
         return new ParallelScan(this, totalSegments);
+    }
+
+    public runQuery(request: QueryInput): Promise<QueryOutput> {
+        return this.runScanOrQuery(DynamoDBRequestMethods.QUERY, request);
+    }
+
+    public runScan(request: ScanInput): Promise<ScanOutput> {
+        return this.runScanOrQuery(DynamoDBRequestMethods.SCAN, request);
+    }
+
+    public runBatchGetItems(request: BatchGetItemInput): Promise<BatchGetItemOutput> {
+        return this.sendRequest(DynamoDBRequestMethods.BATCH_GET, request);
+    }
+
+    public async createTable(additionalOptions?: IMakeTableOptions): Promise<CreateTableOutput | any> {
+        let createTableResult: CreateTableOutput;
+        await this.sendRequest(DynamoDBRequestMethods.CREATE_TABLE, this.makeCreateTableRequest(additionalOptions))
+            .then((success: CreateTableOutput) => {
+                createTableResult = success;
+            })
+            .catch((error: any) => {
+                Log.Error(Table.name, 'createTable', 'Unable to perform "createTable" operation');
+                return Promise.reject(error);
+            });
+        return Promise.resolve(createTableResult);
+    }
+
+    public async describeTable(): Promise<DescribeTableOutput | any> {
+        let describeTableResult: DescribeTableOutput;
+        await this.sendRequest(DynamoDBRequestMethods.DESCRIBE_TABLE, {TableName: this.getTableName()} as DescribeTableInput)
+            .then((success: DescribeTableOutput) => {
+                describeTableResult = success;
+            })
+            .catch((error: any) => {
+                Log.Error(Table.name, 'describeTable', 'Unable to perform "describeTable" operation');
+                return Promise.reject(error);
+            });
+        return Promise.resolve(describeTableResult);
+    }
+
+    public async deleteTable(): Promise<DeleteTableOutput | any> {
+        let deleteTableResult: DeleteTableOutput;
+        await this.sendRequest(DynamoDBRequestMethods.DELETE_TABLE, {TableName: this.getTableName()} as DeleteTableInput)
+            .then((success: DeleteTableOutput) => {
+                deleteTableResult = success;
+            })
+            .catch((error: any) => {
+                Log.Error(Table.name, 'deleteTable', 'Unable to perform "deleteTable" operation');
+                return Promise.reject(error);
+            });
+        return Promise.resolve(deleteTableResult);
+    }
+
+    public async updateTableThroughput(readCapacity: number, writeCapacity: number): Promise<UpdateTableOutput[] | any> {
+        let updateResult: UpdateTableOutput[];
+        await Promise.all([
+            Table.SynchronizeIndexes(this),
+            Table.UpdateTableCapacity(this, readCapacity, writeCapacity)
+        ])
+            .then((success: UpdateTableOutput[]) => {
+                updateResult = success;
+            })
+            .catch((error: any) => {
+                Log.Error(Table.name, 'updateTableThroughput', 'Unable to update table throughput and synchronize indexes');
+                return Promise.reject(error);
+            });
+        return Promise.resolve(updateResult);
+    }
+
+    private makeCreateTableRequest(additionalOptions?: IMakeTableOptions): CreateTableInput {
+        const attributeDefinitions: AttributeDefinition[] = [];
+        const localSecondaryIndexes: LocalSecondaryIndex[] = [];
+        const globalSecondaryIndexes: GlobalSecondaryIndex[] = [];
+        let keySchema: KeySchemaElement[];
+
+        attributeDefinitions.push(Table.GetAttributeDefinition(this.schema, this.schema.getHashKeyName()));
+
+        if (this.schema.getRangeKeyName()) {
+            attributeDefinitions.push(Table.GetAttributeDefinition(this.schema, this.schema.getRangeKeyName()));
+        }
+
+        _.forEach(this.schema.getLocalIndexes(), (secondaryIndex: any /* ISecondaryIndex */) => { // TODO! wipe this lodash thingy out of here!
+            attributeDefinitions.push(Table.GetAttributeDefinition(this.schema, secondaryIndex.rangeKeyName));
+            localSecondaryIndexes.push(Table.GetLocalSecondaryIndex(this.schema, secondaryIndex));
+        });
+
+        _.forEach(this.schema.getGlobalIndexes(), (globalIndex: any, indexName: string) => {
+            if (!_.find(attributeDefinitions, {AttributeName: globalIndex.hashKey})) {
+                attributeDefinitions.push(Table.GetAttributeDefinition(this.schema, globalIndex.hashKeyName));
+            }
+
+            if (globalIndex.rangeKeyName && !_.find(attributeDefinitions, {AttributeName: globalIndex.rangeKeyName})) {
+                attributeDefinitions.push(Table.GetAttributeDefinition(this.schema, globalIndex.rangeKeyName));
+            }
+
+            globalSecondaryIndexes.push(Table.GetGlobalSecondaryIndex(indexName, globalIndex));
+        });
+
+        keySchema = Table.GetKeySchema(this.schema.getHashKeyName(), this.schema.getRangeKeyName());
+
+        const createTableRequest: CreateTableInput = {
+            AttributeDefinitions: attributeDefinitions,
+            TableName: this.getTableName(),
+            KeySchema: keySchema,
+            ProvisionedThroughput: {
+                ReadCapacityUnits: additionalOptions.readCapacity || 1,
+                WriteCapacityUnits: additionalOptions.writeCapacity || 1
+            }
+        };
+
+        if (localSecondaryIndexes.length >= 1) {
+            createTableRequest.LocalSecondaryIndexes = localSecondaryIndexes;
+        }
+
+        if (globalSecondaryIndexes.length >= 1) {
+            createTableRequest.GlobalSecondaryIndexes = globalSecondaryIndexes;
+        }
+
+        if (additionalOptions.streamSpecification) {
+            createTableRequest.StreamSpecification = additionalOptions.streamSpecification;
+        }
+
+        if (additionalOptions.billingMode) {
+            createTableRequest.BillingMode = additionalOptions.billingMode;
+        }
+
+        if (additionalOptions.sseSpecification) {
+            createTableRequest.SSESpecification = additionalOptions.sseSpecification;
+        }
+
+        if (additionalOptions.tags) {
+            createTableRequest.Tags = additionalOptions.tags;
+        }
+
+        return createTableRequest;
+    }
+
+    private async runScanOrQuery(operation: DynamoDBRequestMethods, request: QueryInput | ScanInput): Promise<QueryOutput|ScanOutput> {
+        let result: QueryOutput | ScanOutput;
+        await this.sendRequest(operation, request)
+            .then((success: QueryOutput | ScanOutput) => {
+                result = Table.DeserializeItemsForQueryOrScan(this, success);
+            })
+            .catch((error: any) => {
+                Log.Error(Table.name, `run${operation}`, `Unable to perform "${operation}" operation`);
+                return Promise.reject(error);
+            });
+
+        return Promise.resolve(result);
     }
 
     // formally CallBeforeHooks()
@@ -335,7 +489,7 @@ export class Table {
         putItemRequest = {...putItemRequest, ...options.putItemRequest};
 
         let resultToReturn: PutItemOutput;
-        await table.sendRequest(DynamoDBRequestMethods.PUT, putItemRequest)
+        await table.sendRequest(DynamoDBRequestMethods.PUT_ITEM, putItemRequest)
             .then((result: PutItemOutput) => {
                 resultToReturn = result;
                 table.afterEvent.emit(TableEvents.CREATE, result);
@@ -465,7 +619,148 @@ export class Table {
         return item;
     }
 
-    private static DeserializeItems(table: Table) {
+    private static DeserializeItemsForQueryOrScan(table: Table, requestResult: QueryOutput | ScanOutput): QueryOutput | ScanOutput {
+        const result: QueryOutput | ScanOutput = {};
+        if (requestResult.Items) {
+            result.Items = requestResult.Items.map((item: AttributeMap) => table.createItem(Serializer.DeserializeItem(item)).getAttributes() as AttributeMap);
+            delete requestResult.Items;
+        }
 
+        if (requestResult.LastEvaluatedKey) {
+            result.LastEvaluatedKey = requestResult.LastEvaluatedKey;
+            delete requestResult.LastEvaluatedKey;
+        }
+
+        return {...requestResult, ...result};
+    }
+
+    private static GetAttributeDefinition(schema: Schema, key: string): AttributeDefinition {
+        return {
+            AttributeName: key,
+            AttributeType: schema.getDatatypes()[key]
+        };
+    }
+
+    private static GetKeySchema(hashKeyName: string, rangeKeyName?: string): KeySchemaElement[] {
+        const result: KeySchemaElement[] = [{
+            AttributeName: hashKeyName,
+            KeyType: KeyTypes.HASH
+        }];
+
+        if (rangeKeyName) {
+            result.push({
+                AttributeName: rangeKeyName,
+                KeyType: KeyTypes.RANGE
+            });
+        }
+
+        return result;
+    }
+
+    private static GetLocalSecondaryIndex(schema: Schema, secondaryIndex: IIndex): LocalSecondaryIndex {
+        return {
+            IndexName: secondaryIndex.name,
+            KeySchema: Table.GetKeySchema(schema.getHashKeyName(), secondaryIndex.rangeKeyName),
+            Projection: {
+                ProjectionType: secondaryIndex.projection.ProjectionType || ProjectionTypes.ALL
+            }
+        }
+    }
+
+    private static GetGlobalSecondaryIndex(indexName: string, secondaryIndex: IIndex): GlobalSecondaryIndex {
+        return {
+            IndexName: indexName,
+            KeySchema: Table.GetKeySchema(secondaryIndex.hashKeyName, secondaryIndex.rangeKeyName),
+            Projection: {ProjectionType: secondaryIndex.projection.ProjectionType}, // TODO: put default parameter? ProjectionTypes.ALL?
+            ProvisionedThroughput: {
+                ReadCapacityUnits: secondaryIndex.readCapacity || 1,
+                WriteCapacityUnits: secondaryIndex.writeCapacity || 1
+            }
+        };
+    }
+
+    private static async SynchronizeIndexes(table: Table): Promise<any> {
+        const tableDescription: DescribeTableOutput = (await table.describeTable());
+        const missing: Map<string, IIndex> = this.FindMissingGlobalIndexes(table, tableDescription);
+        const promises: any[] = [];
+        missing.forEach((value: IIndex, key: string) => {
+            const attributeDefinitions: AttributeDefinition[] = [];
+            attributeDefinitions.push(Table.GetAttributeDefinition(table.schema, value.hashKeyName));
+
+            if (value.rangeKeyName && !attributeDefinitions.find((attribute) => attribute.AttributeName === value.rangeKeyName)) {
+                attributeDefinitions.push(Table.GetAttributeDefinition(table.schema, value.rangeKeyName));
+            }
+
+            value.writeCapacity = value.writeCapacity || Math.ceil(tableDescription.Table.ProvisionedThroughput.WriteCapacityUnits * 1.5);
+
+            Log.Info(Table.name, 'SynchronizeIndexes', 'Adding index to table', [
+                {name: 'Table name', value: table.getTableName()},
+                {name: 'Index name', value: value.name}
+            ]);
+
+            promises.push(table.sendRequest(DynamoDBRequestMethods.UPDATE_TABLE, {
+                TableName: table.getTableName(),
+                AttributeDefinitions: attributeDefinitions,
+                GlobalSecondaryIndexUpdates: [{Create: Table.GetGlobalSecondaryIndex(key, value)}]
+            } as UpdateTableInput));
+        });
+
+        return (await Promise.all(promises));
+        /*return new Promise((resolve, reject) => { // TODO: remove this and everything inside and replace with better
+            mapLimit(missing, 5, (item: IIndex, data, err) => {
+                const attributeDefinitions: AttributeDefinition[] = [];
+                if (!_.find(attributeDefinitions, {AttributeName: item.hashKeyName})) { // TODO: if attrDef = [], for sure it won't find anything....
+                    attributeDefinitions.push(Table.GetAttributeDefinition(table.schema, item.hashKeyName));
+                }
+
+                if (item.rangeKeyName && !_.find(attributeDefinitions, {AttributeName: item.rangeKeyName})) {
+                    attributeDefinitions.push(Table.GetAttributeDefinition(table.schema, item.rangeKeyName));
+                }
+
+                item.writeCapacity = item.writeCapacity || Math.ceil(tableDescription.Table.ProvisionedThroughput.WriteCapacityUnits * 1.5);
+
+                Log.Info(Table.name, 'SynchronizeIndexes', 'Adding index to table', [
+                    {name: 'Table name', value: table.getTableName()},
+                    {name: 'Index name', value: item.name}
+                ]);
+
+                table.sendRequest
+            });
+        })*/
+    }
+
+    private static async UpdateTableCapacity(table: Table, readCapacity: number, writeCapacity: number): Promise<any> {
+        const updateTableRequest: UpdateTableInput = {
+            TableName: table.getTableName(),
+            ProvisionedThroughput: {
+                ReadCapacityUnits: readCapacity > 0 ? readCapacity : 1,
+                WriteCapacityUnits: writeCapacity > 0 ? writeCapacity : 0
+            }
+        };
+
+        return (await table.sendRequest(DynamoDBRequestMethods.UPDATE_TABLE, updateTableRequest));
+    }
+
+    private static FindMissingGlobalIndexes(table: Table, tableDescription: DescribeTableOutput): Map<string, IIndex> {
+        if (!tableDescription) {
+            return table.schema.getGlobalIndexes();
+        }
+
+        const existingIndexNames: string[] = tableDescription.Table.GlobalSecondaryIndexes.map((index: GlobalSecondaryIndexDescription) => index.IndexName);
+        const missingIndexes: Map<string, IIndex> = new Map<string, IIndex>(table.schema.getGlobalIndexes());
+        missingIndexes.forEach((currentValue: IIndex, indexName: string) => {
+            if (!existingIndexNames.includes(currentValue.name)) {
+                missingIndexes.delete(indexName);
+            }
+        });
+
+        return missingIndexes;
+        // OLD:
+        /*return _.reduce(table.schema.getGlobalIndexes(), (accumulator: any, currentValue: IIndex, indexName: string) => {
+            if (existingIndexNames.includes(currentValue.name)) {
+                accumulator[indexName] = currentValue;
+            }
+            return accumulator;
+        }, {});*/
     }
 }

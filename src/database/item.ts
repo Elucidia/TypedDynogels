@@ -76,6 +76,23 @@ export class Item extends EventEmitter {
 
     public async delete(options?: IDeleteItemOptions): Promise<DeleteItemOutput | any> {
         let resultToReturn: DeleteItemOutput;
-        await this.table.deleteItem(this.attributes)
+        await this.table.deleteItem(this.attributes, null, options)
+            .then((success: DeleteItemOutput) => {
+                resultToReturn = success;
+            })
+            .catch((error: any) => {
+                Log.Error(Item.name, 'update', 'Unable to perform deleteItem operation');
+                return Promise.reject(error);
+            });
+        return Promise.resolve(resultToReturn);
+    }
+
+    public attributeToJSON(): Object {
+        return _.cloneDeep(this.attributes);
+    }
+
+    // TODO: why having 2 functions that are the **** same
+    public toPlainObject(): Object {
+        return this.attributeToJSON();
     }
 }
